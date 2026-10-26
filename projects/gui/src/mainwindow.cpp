@@ -55,6 +55,7 @@
 #include "evalwidget.h"
 #include "boardview/boardscene.h"
 #include "tournamentresultsdlg.h"
+#include "tournamentresultswidget.h"
 
 #if 0
 #include <modeltest.h>
@@ -398,6 +399,16 @@ void MainWindow::createDockWindows()
 	tabifyDockWidget(moveListDock, tagsDock);
 	moveListDock->raise();
 
+	// Tournament standings, shown when a tournament is started
+	m_standingsWidget = new TournamentResultsWidget(this);
+	m_standingsDock = new QDockWidget(tr("Tournament Standings"), this);
+	m_standingsDock->setObjectName("TournamentStandingsDock");
+	m_standingsDock->setWidget(m_standingsWidget);
+	addDockWidget(Qt::BottomDockWidgetArea, m_standingsDock);
+	tabifyDockWidget(evalHistoryDock, m_standingsDock);
+	evalHistoryDock->raise();
+	m_standingsDock->hide();
+
 	// Add toggle view actions to the View menu
 	m_viewMenu->addAction(moveListDock->toggleViewAction());
 	m_viewMenu->addAction(tagsDock->toggleViewAction());
@@ -405,6 +416,7 @@ void MainWindow::createDockWindows()
 	m_viewMenu->addAction(evalHistoryDock->toggleViewAction());
 	m_viewMenu->addAction(whiteEvalDock->toggleViewAction());
 	m_viewMenu->addAction(blackEvalDock->toggleViewAction());
+	m_viewMenu->addAction(m_standingsDock->toggleViewAction());
 }
 
 void MainWindow::readSettings()
@@ -415,6 +427,20 @@ void MainWindow::readSettings()
 
 	restoreGeometry(s.value("geometry").toByteArray());
 	restoreState(s.value("window_state").toByteArray());
+
+	// Window states saved by older versions don't have the standings
+	// dock, and restoreState() then leaves it squeezed next to another
+	// dock. Put it back in its default place as a tab.
+	if (s.contains("window_state") && !s.value("has_standings_dock").toBool())
+	{
+		auto evalHistoryDock = findChild<QDockWidget*>("EvalHistoryDock");
+		if (evalHistoryDock != nullptr && !evalHistoryDock->isFloating())
+		{
+			tabifyDockWidget(evalHistoryDock, m_standingsDock);
+			evalHistoryDock->raise();
+		}
+		m_standingsDock->hide();
+	}
 
 	s.endGroup();
 	s.endGroup();
@@ -428,6 +454,7 @@ void MainWindow::writeSettings()
 
 	s.setValue("geometry", saveGeometry());
 	s.setValue("window_state", saveState());
+	s.setValue("has_standings_dock", true);
 
 	s.endGroup();
 	s.endGroup();
@@ -816,6 +843,10 @@ void MainWindow::newTournament()
 	m_newTournamentAct->setEnabled(false);
 	m_stopTournamentAct->setEnabled(true);
 	resultsDialog->setTournament(t);
+
+	m_standingsWidget->setTournament(t);
+	m_standingsDock->show();
+	m_standingsDock->raise();
 }
 
 void MainWindow::onTournamentFinished()

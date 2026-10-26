@@ -209,6 +209,7 @@ add_executable(gui
 	projects/gui/src/newgamedlg.cpp
 	projects/gui/src/threadedtask.cpp
 	projects/gui/src/tournamentresultsdlg.cpp
+	projects/gui/src/tournamentresultswidget.cpp
 	projects/gui/src/settingsdlg.cpp
 	projects/gui/src/enginemanagementwidget.cpp
 	projects/gui/src/engineconfigproxymodel.cpp

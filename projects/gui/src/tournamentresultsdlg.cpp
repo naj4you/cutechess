@@ -18,29 +18,20 @@
 
 #include "tournamentresultsdlg.h"
 
-#include <limits>
-
-#include <QPlainTextEdit>
 #include <QBoxLayout>
-#include <QFont>
 
 #include <tournament.h>
+#include "tournamentresultswidget.h"
 
 TournamentResultsDialog::TournamentResultsDialog(QWidget* parent)
 	: QDialog(parent)
 {
 	setWindowTitle(tr("Tournament Results"));
 
-	m_resultsEdit = new QPlainTextEdit(this);
-	m_resultsEdit->setReadOnly(true);
-
-	QFont font("Courier New");
-	font.setStyleHint(QFont::Monospace);
-	font.setPointSize(font.pointSize() - 1);
-	m_resultsEdit->document()->setDefaultFont(font);
+	m_resultsWidget = new TournamentResultsWidget(this);
 
 	auto layout = new QBoxLayout(QBoxLayout::TopToBottom);
-	layout->addWidget(m_resultsEdit);
+	layout->addWidget(m_resultsWidget);
 	layout->setContentsMargins(0, 0, 0, 0);
 
 	setLayout(layout);
@@ -54,39 +45,12 @@ TournamentResultsDialog::~TournamentResultsDialog()
 void TournamentResultsDialog::setTournament(Tournament* tournament)
 {
 	setWindowTitle(tournament->name());
-	m_resultsEdit->setPlainText(tournament->results());
+	m_resultsWidget->updateResults(tournament);
 }
 
 void TournamentResultsDialog::update()
 {
 	auto tournament = qobject_cast<Tournament*>(QObject::sender());
 	Q_ASSERT(tournament != nullptr);
-	QString text;
-
-	// A quick fix, copied from the CLI side.
-	if (tournament->playerCount() == 2 && tournament->type() != "knockout")
-	{
-		TournamentPlayer fcp = tournament->playerAt(0);
-		TournamentPlayer scp = tournament->playerAt(1);
-		int totalResults = fcp.gamesFinished();
-		double scoreRatio = std::numeric_limits<double>::quiet_NaN();
-		if (totalResults > 0)
-			scoreRatio = double(fcp.score()) / (totalResults * 2);
-		text = tr("Score of %1 vs %2: %3 - %4 - %5 [%6]\n") // clazy:exclude=qstring-arg
-		       .arg(fcp.name())
-		       .arg(scp.name())
-		       .arg(fcp.wins())
-		       .arg(scp.wins())
-		       .arg(fcp.draws())
-		       .arg(scoreRatio, 0, 'f', 3);
-	}
-
-	text += tournament->results();
-	text += tr("\n%1 of %2 games finished.")
-		.arg(tournament->finishedGameCount())
-		.arg(tournament->finalGameCount());
-	if (tournament->finishedGameCount() >= tournament->finalGameCount()
-	|| tournament->isStopping())
-		text.append("\n").append(tournament->outcomes());
-	m_resultsEdit->setPlainText(text);
+	m_resultsWidget->updateResults(tournament);
 }

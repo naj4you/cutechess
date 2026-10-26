@@ -42,6 +42,8 @@ class Tournament;
 class GameTabBar;
 class EvalHistory;
 class EvalWidget;
+class TournamentResultsWidget;
+class QDockWidget;
 
 /**
  * MainWindow
@@ -164,6 +166,8 @@ class MainWindow : public QMainWindow
 
 		EvalHistory* m_evalHistory;
 		EvalWidget* m_evalWidgets[2];
+		TournamentResultsWidget* m_standingsWidget;
+		QDockWidget* m_standingsDock;
 
 		QPointer<ChessGame> m_game;
 		QPointer<ChessPlayer> m_players[2];
