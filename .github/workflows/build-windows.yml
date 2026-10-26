@@ -1,0 +1,52 @@
+# Builds a Windows version of Cute Chess from any branch of your fork
+# and makes it available as a downloadable zip file.
+#
+# Put this file in .github/workflows/ on the master branch of YOUR fork
+# (not on the branch you send as a pull request), then run it from the
+# Actions tab: "Build Windows zip" -> "Run workflow" -> type the branch name.
+name: Build Windows zip
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch to build"
+        required: true
+        default: "min-version"
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+          persist-credentials: false
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: 6.8.3
+          modules: qt5compat
+
+      - name: Build
+        run: |
+          cmake -S . -B build -DWITH_TESTS=OFF
+          cmake --build build --config Release
+
+      - name: Package
+        run: |
+          $name = "cutechess-${{ github.event.inputs.branch }}-win64"
+          mkdir $name
+          cp build\Release\cutechess.exe $name\
+          cp build\Release\cutechess-cli.exe $name\
+          cp COPYING $name\
+          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --no-translations "$name\cutechess.exe"
+          echo "PKG=$name" >> $env:GITHUB_ENV
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PKG }}
+          path: ${{ env.PKG }}
