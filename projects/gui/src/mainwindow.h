@@ -21,6 +21,7 @@
 
 #include <QMainWindow>
 #include <QPointer>
+#include <QVariantMap>
 #include <board/side.h>
 
 namespace Chess {
@@ -65,6 +66,10 @@ class MainWindow : public QMainWindow
 	private slots:
 		void newGame();
 		void newTournament();
+		void resumeSavedTournament();
+		void onPauseTournamentToggled(bool checked);
+		void saveAndStopTournament();
+		void onTournamentPaused();
 		void onWindowMenuAboutToShow();
 		void showGameWindow();
 		void updateWindowTitle();
@@ -122,6 +127,10 @@ class MainWindow : public QMainWindow
 		int tabIndex(Tournament* tournament, bool freeTab = false) const;
 		void addDefaultWindowMenu();
 		void adjudicateGame(Chess::Side winner);
+		void startTournament(Tournament* tournament,
+				     const QVariantMap& config,
+				     const QString& fileName);
+		bool writeTournamentFile(const QString& fileName);
 
 		QMenu* m_gameMenu;
 		QMenu* m_tournamentMenu;
@@ -151,6 +160,9 @@ class MainWindow : public QMainWindow
 		QAction* m_flipBoardAct;
 		QAction* m_newTournamentAct;
 		QAction* m_stopTournamentAct;
+		QAction* m_resumeTournamentAct;
+		QAction* m_pauseTournamentAct;
+		QAction* m_saveTournamentAct;
 		QAction* m_showTournamentResultsAct;
 		QAction* m_minimizeAct;
 		QAction* m_showGameDatabaseWindowAct;
@@ -170,6 +182,11 @@ class MainWindow : public QMainWindow
 		QList<TabData> m_tabs;
 
 		QString m_currentFile;
+		QPointer<Tournament> m_tournament;
+		QVariantMap m_tournamentConfig;
+		QString m_tournamentFile;
+		QString m_tournamentSavedTo;
+		bool m_saveWhenPaused;
 		bool m_closing;
 		bool m_readyToClose;
 

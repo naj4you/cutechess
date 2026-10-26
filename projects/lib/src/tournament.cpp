@@ -20,6 +20,8 @@
 #include <QFile>
 #include <QMultiMap>
 #include <QSet>
+#include <QTimer>
+#include <algorithm>
 #include "gamemanager.h"
 #include "playerbuilder.h"
 #include "board/boardfactory.h"
@@ -63,7 +65,9 @@ Tournament::Tournament(GameManager* gameManager, QObject *parent)
 	  m_reverseSides(false),
 	  m_resultFormat(c_defaultFormat),
 	  m_pgnOutMode(PgnGame::Verbose),
-	  m_pair(nullptr)
+	  m_pair(nullptr),
+	  m_pauseRequested(false),
+	  m_paused(false)
 {
 	Q_ASSERT(gameManager != nullptr);
 
@@ -418,6 +422,7 @@ bool Tournament::hasGauntletRatingsOrder() const
 void Tournament::startGame(TournamentPair* pair)
 {
 	Q_ASSERT(pair->isValid());
+	bool suiteAdvanced = false;
 	m_pair = pair;
 	m_pair->addStartedGame();
 
@@ -452,6 +457,7 @@ void Tournament::startGame(TournamentPair* pair)
 		m_repetitionCounter = 1;
 		if (m_openingSuite != nullptr)
 		{
+			suiteAdvanced = true;
 			if (!game->setMoves(m_openingSuite->nextGame(m_openingDepth)))
 				qWarning("The opening suite is incompatible with the "
 				"current chess variant");
@@ -482,6 +488,8 @@ void Tournament::startGame(TournamentPair* pair)
 	data->number = ++m_nextGameNumber;
 	data->whiteIndex = m_pair->firstPlayer();
 	data->blackIndex = m_pair->secondPlayer();
+	data->finishedBefore = m_finishedGameCount;
+	data->suiteAdvanced = suiteAdvanced;
 	m_gameData[game] = data;
 
 	// Some tournament types may require more games than expected
@@ -522,12 +530,19 @@ int Tournament::playerIndex(ChessGame* game, Chess::Side side) const
 
 void Tournament::startNextGame()
 {
-	if (m_stopping)
+	if (m_stopping || m_pauseRequested)
 		return;
 
+	TournamentPair* pair = prepareNextPair();
+	if (pair)
+		startGame(pair);
+}
+
+TournamentPair* Tournament::prepareNextPair()
+{
 	TournamentPair* pair(nextPair(m_nextGameNumber));
 	if (!pair || !pair->isValid())
-		return;
+		return nullptr;
 
 	bool samePlayers = pair->hasSamePlayers(m_pair);
 	if (!samePlayers && m_reverseSides)
@@ -544,7 +559,7 @@ void Tournament::startNextGame()
 		m_oldRound = m_round;
 	}
 
-	startGame(pair);
+	return pair;
 }
 
 inline bool faulty(const Chess::Result::Type& type)
@@ -748,6 +763,7 @@ void Tournament::onGameFinished(ChessGame* game)
 
 	int iWhite = data->whiteIndex;
 	int iBlack = data->blackIndex;
+	const Chess::Result result = game->result();
 	const auto whiteName = pgn->playerName(Chess::Side::White);
 	if (!whiteName.isEmpty())
 		m_players[iWhite].setName(whiteName);
@@ -755,33 +771,23 @@ void Tournament::onGameFinished(ChessGame* game)
 	if (!blackName.isEmpty())
 		m_players[iBlack].setName(blackName);
 
-	switch (game->result().winner())
-	{
-	case Chess::Side::White:
-		addScore(iWhite, Chess::Side::White, 2);
-		addScore(iBlack, Chess::Side::Black, 0);
-		sprtResult = (iWhite == 0) ? Sprt::Win : Sprt::Loss;
-		break;
-	case Chess::Side::Black:
-		addScore(iBlack, Chess::Side::Black, 2);
-		addScore(iWhite, Chess::Side::White, 0);
-		sprtResult = (iBlack == 0) ? Sprt::Win : Sprt::Loss;
-		break;
-	default:
-		if (game->result().isDraw())
-		{
-			addScore(iWhite,  Chess::Side::White, 1);
-			addScore(iBlack,  Chess::Side::Black, 1);
-			sprtResult = Sprt::Draw;
-		}
-		break;
-	}
+	sprtResult = Sprt::GameResult(addGameScore(iWhite, iBlack, result));
 
 	writeEpd(game);
 	writePgn(pgn, gameNumber);
 
-	addOutcome(iWhite, iBlack, game->result());
-	Chess::Result::Type resultType(game->result().type());
+	addOutcome(iWhite, iBlack, result);
+	Chess::Result::Type resultType(result.type());
+
+	GameRecord record;
+	record.number = gameNumber;
+	record.whiteIndex = iWhite;
+	record.blackIndex = iBlack;
+	record.finishedBefore = data->finishedBefore;
+	record.finishOrder = m_finishedGameCount;
+	record.suiteAdvanced = data->suiteAdvanced;
+	record.result = result;
+	m_records[gameNumber] = record;
 
 	bool crashed = (resultType == Chess::Result::Disconnection ||
 			resultType == Chess::Result::StalledConnection);
@@ -810,6 +816,40 @@ void Tournament::onGameFinished(ChessGame* game)
 
 	delete data;
 	game->deleteLater();
+
+	if (m_pauseRequested && m_gameData.isEmpty())
+		QTimer::singleShot(0, this, [this]() { checkPause(); });
+}
+
+int Tournament::addGameScore(int iWhite,
+			     int iBlack,
+			     const Chess::Result& result)
+{
+	Sprt::GameResult sprtResult = Sprt::NoResult;
+
+	switch (result.winner())
+	{
+	case Chess::Side::White:
+		addScore(iWhite, Chess::Side::White, 2);
+		addScore(iBlack, Chess::Side::Black, 0);
+		sprtResult = (iWhite == 0) ? Sprt::Win : Sprt::Loss;
+		break;
+	case Chess::Side::Black:
+		addScore(iBlack, Chess::Side::Black, 2);
+		addScore(iWhite, Chess::Side::White, 0);
+		sprtResult = (iBlack == 0) ? Sprt::Win : Sprt::Loss;
+		break;
+	default:
+		if (result.isDraw())
+		{
+			addScore(iWhite,  Chess::Side::White, 1);
+			addScore(iBlack,  Chess::Side::Black, 1);
+			sprtResult = Sprt::Draw;
+		}
+		break;
+	}
+
+	return sprtResult;
 }
 
 void Tournament::onGameDestroyed(ChessGame* game)
@@ -857,12 +897,40 @@ void Tournament::start()
 	m_pgnGames.clear();
 	m_startFen.clear();
 	m_openingMoves.clear();
+	m_records.clear();
+	m_pauseRequested = false;
+	m_paused = false;
 
 	connect(m_gameManager, SIGNAL(ready()),
 		this, SLOT(startNextGame()));
 
 	initializePairing();
 	m_finalGameCount = gamesPerCycle() * gamesPerEncounter() * roundMultiplier();
+
+	if (!m_resumeState.isEmpty())
+	{
+		const QVariantMap state = m_resumeState;
+		m_resumeState.clear();
+
+		if (!restoreState(state))
+		{
+			if (m_error.isEmpty())
+				m_error = tr("The saved tournament state does not "
+					     "match the tournament settings");
+			disconnect(m_gameManager, SIGNAL(ready()),
+				   this, SLOT(startNextGame()));
+			QTimer::singleShot(0, this, [this]() { onFinished(); });
+			return;
+		}
+
+		if (areAllGamesFinished())
+		{
+			disconnect(m_gameManager, SIGNAL(ready()),
+				   this, SLOT(startNextGame()));
+			QTimer::singleShot(0, this, [this]() { onFinished(); });
+			return;
+		}
+	}
 
 	startNextGame();
 }
@@ -890,6 +958,292 @@ void Tournament::stop()
 bool Tournament::isStopping() const
 {
 	return m_stopping;
+}
+
+void Tournament::pause()
+{
+	if (m_finished || m_stopping || m_pauseRequested)
+		return;
+
+	m_pauseRequested = true;
+	if (m_gameData.isEmpty())
+		QTimer::singleShot(0, this, [this]() { checkPause(); });
+}
+
+void Tournament::resume()
+{
+	if (!m_pauseRequested)
+		return;
+
+	m_pauseRequested = false;
+	m_paused = false;
+
+	if (!m_finished && !m_stopping)
+		startNextGame();
+}
+
+bool Tournament::checkPause()
+{
+	// m_lastGame is set when the tournament is about to finish
+	// (all games played, or stopped)
+	if (!m_pauseRequested || m_paused || m_stopping || m_finished
+	||  m_lastGame != nullptr || !m_gameData.isEmpty()
+	||  areAllGamesFinished())
+		return false;
+
+	m_paused = true;
+	emit paused();
+	return true;
+}
+
+bool Tournament::isPauseRequested() const
+{
+	return m_pauseRequested;
+}
+
+bool Tournament::isPaused() const
+{
+	return m_paused;
+}
+
+static const int s_stateVersion = 1;
+
+QVariantMap Tournament::saveState() const
+{
+	if (!m_gameData.isEmpty())
+		return QVariantMap();
+
+	QVariantMap state;
+	state["version"] = s_stateVersion;
+	state["type"] = type();
+	state["variant"] = m_variant;
+	state["playerCount"] = m_players.size();
+
+	QVariantList names;
+	for (const TournamentPlayer& player : m_players)
+		names << player.name();
+	state["playerNames"] = names;
+
+	QVariantList games;
+	for (const GameRecord& rec : m_records)
+	{
+		QVariantMap game;
+		game["number"] = rec.number;
+		game["white"] = rec.whiteIndex;
+		game["black"] = rec.blackIndex;
+		game["finishedBefore"] = rec.finishedBefore;
+		game["finishOrder"] = rec.finishOrder;
+		game["suiteAdvanced"] = rec.suiteAdvanced;
+		game["resultType"] = int(rec.result.type());
+		game["winner"] = rec.result.winner().symbol();
+		game["description"] = rec.result.extraDescription();
+		game["result"] = rec.result.toShortString();
+		games << game;
+	}
+	state["games"] = games;
+
+	// The opening that will be repeated in the next game, if any
+	QVariantMap opening;
+	opening["startFen"] = m_startFen;
+	opening["repetitionCounter"] = m_repetitionCounter;
+	opening["oldRound"] = m_oldRound;
+	QStringList moves;
+	if (!m_openingMoves.isEmpty())
+	{
+		Chess::Board* board = Chess::BoardFactory::create(m_variant);
+		if (board != nullptr
+		&&  board->setFenString(m_startFen.isEmpty()
+					? board->defaultFenString()
+					: m_startFen))
+		{
+			for (const Chess::Move& move : m_openingMoves)
+			{
+				moves << board->moveString(move,
+					Chess::Board::LongAlgebraic);
+				board->makeMove(move);
+			}
+		}
+		delete board;
+	}
+	opening["moves"] = moves;
+	state["opening"] = opening;
+
+	return state;
+}
+
+bool Tournament::setResumeState(const QVariantMap& state)
+{
+	if (state.value("version").toInt() != s_stateVersion)
+	{
+		m_error = tr("Unsupported tournament state version");
+		return false;
+	}
+	if (state.value("type").toString() != type())
+	{
+		m_error = tr("The saved state is for a %1 tournament")
+			  .arg(state.value("type").toString());
+		return false;
+	}
+	if (state.value("playerCount").toInt() != m_players.size())
+	{
+		m_error = tr("The saved state has a different number "
+			     "of players");
+		return false;
+	}
+
+	m_resumeState = state;
+	return true;
+}
+
+bool Tournament::restoreState(const QVariantMap& state)
+{
+	QList<GameRecord> records;
+	const QVariantList games = state.value("games").toList();
+	for (const QVariant& var : games)
+	{
+		const QVariantMap game = var.toMap();
+		GameRecord rec;
+		rec.number = game.value("number").toInt();
+		rec.whiteIndex = game.value("white").toInt();
+		rec.blackIndex = game.value("black").toInt();
+		rec.finishedBefore = game.value("finishedBefore").toInt();
+		rec.finishOrder = game.value("finishOrder").toInt();
+		rec.suiteAdvanced = game.value("suiteAdvanced").toBool();
+
+		Chess::Side winner;
+		const QString symbol = game.value("winner").toString();
+		if (!symbol.isEmpty())
+			winner = Chess::Side(symbol);
+		rec.result = Chess::Result(
+			Chess::Result::Type(game.value("resultType").toInt()),
+			winner,
+			game.value("description").toString());
+
+		if (rec.whiteIndex < 0 || rec.whiteIndex >= m_players.size()
+		||  rec.blackIndex < 0 || rec.blackIndex >= m_players.size())
+			return false;
+		records << rec;
+	}
+
+	std::sort(records.begin(), records.end(),
+		  [](const GameRecord& a, const GameRecord& b)
+	{
+		return a.number < b.number;
+	});
+
+	if (!replayGames(records))
+		return false;
+
+	const QVariantList names = state.value("playerNames").toList();
+	for (int i = 0; i < names.size() && i < m_players.size(); i++)
+	{
+		const QString name = names.at(i).toString();
+		if (!name.isEmpty())
+			m_players[i].setName(name);
+	}
+
+	const QVariantMap opening = state.value("opening").toMap();
+	m_startFen = opening.value("startFen").toString();
+	m_repetitionCounter = opening.value("repetitionCounter", 0).toInt();
+	m_oldRound = opening.value("oldRound", -1).toInt();
+	m_openingMoves.clear();
+
+	const QStringList moves = opening.value("moves").toStringList();
+	if (!moves.isEmpty())
+	{
+		Chess::Board* board = Chess::BoardFactory::create(m_variant);
+		if (board == nullptr
+		||  !board->setFenString(m_startFen.isEmpty()
+					 ? board->defaultFenString()
+					 : m_startFen))
+		{
+			delete board;
+			return false;
+		}
+		for (const QString& str : moves)
+		{
+			Chess::Move move = board->moveFromString(str);
+			if (move.isNull())
+			{
+				delete board;
+				return false;
+			}
+			m_openingMoves << move;
+			board->makeMove(move);
+		}
+		delete board;
+	}
+
+	return true;
+}
+
+bool Tournament::replayGames(const QList<GameRecord>& records)
+{
+	// Results are applied in the order the games finished, and only
+	// the results that were known when a game was started are applied
+	// before it. This way the pairing code sees exactly the same state
+	// as during the original tournament, even with concurrent games.
+	QList<GameRecord> byFinish(records);
+	std::sort(byFinish.begin(), byFinish.end(),
+		  [](const GameRecord& a, const GameRecord& b)
+	{
+		return a.finishOrder < b.finishOrder;
+	});
+	for (int i = 0; i < byFinish.size(); i++)
+	{
+		if (byFinish.at(i).finishOrder != i + 1)
+			return false;
+	}
+
+	int applied = 0;
+	auto applyNext = [&]()
+	{
+		const GameRecord& rec = byFinish.at(applied++);
+		m_finishedGameCount++;
+		auto sprtResult = Sprt::GameResult(
+			addGameScore(rec.whiteIndex, rec.blackIndex, rec.result));
+		addOutcome(rec.whiteIndex, rec.blackIndex, rec.result);
+		if (!m_sprt->isNull() && sprtResult != Sprt::NoResult)
+			m_sprt->addGameResult(sprtResult);
+		m_records[rec.number] = rec;
+	};
+
+	for (const GameRecord& rec : records)
+	{
+		if (rec.number != m_nextGameNumber + 1)
+			return false;
+
+		while (applied < byFinish.size()
+		&&     byFinish.at(applied).finishOrder <= rec.finishedBefore)
+			applyNext();
+		if (m_finishedGameCount != rec.finishedBefore)
+			return false;
+
+		TournamentPair* pair = prepareNextPair();
+		if (pair == nullptr
+		||  pair->firstPlayer() != rec.whiteIndex
+		||  pair->secondPlayer() != rec.blackIndex)
+		{
+			qWarning("Tournament: cannot replay game %d", rec.number);
+			return false;
+		}
+
+		// Same bookkeeping as startGame(), without playing the game
+		m_pair = pair;
+		m_pair->addStartedGame();
+		if (rec.suiteAdvanced && m_openingSuite != nullptr)
+			m_openingSuite->nextGame(m_openingDepth);
+		if (++m_nextGameNumber > m_finalGameCount)
+			m_finalGameCount = m_nextGameNumber;
+		if (m_swapSides)
+			m_pair->swapPlayers();
+	}
+
+	while (applied < byFinish.size())
+		applyNext();
+
+	m_savedGameCount = m_nextGameNumber;
+	return true;
 }
 
 int Tournament::gameNumber(ChessGame* game) const

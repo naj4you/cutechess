@@ -25,6 +25,7 @@
 #include <QMap>
 #include <QFile>
 #include <QTextStream>
+#include <QVariantMap>
 #include "board/move.h"
 #include "timecontrol.h"
 #include "pgngame.h"
@@ -337,6 +338,48 @@ class LIB_EXPORT Tournament : public QObject
 		 * \note The game numbers start at 1.
 		 */
 		int gameNumber(ChessGame* game) const;
+		/*!
+		 * Returns true if a pause was requested with pause() and
+		 * the tournament has not been resumed since.
+		 *
+		 * \sa isPaused()
+		 */
+		bool isPauseRequested() const;
+		/*!
+		 * Returns true if the tournament is paused, ie. a pause was
+		 * requested and all the games that were running at that
+		 * time have finished.
+		 */
+		bool isPaused() const;
+		/*!
+		 * Returns the state of the tournament as a variant map
+		 * that can be stored (eg. as JSON) and later passed to
+		 * setResumeState() to continue the tournament.
+		 *
+		 * The state contains the results of all finished games and
+		 * the position in the pairing schedule and opening suite.
+		 * It does not contain the tournament settings, which must
+		 * be stored separately and applied identically before
+		 * resuming.
+		 *
+		 * The state can only be saved when no games are in progress,
+		 * eg. when the tournament is paused. Otherwise an empty map
+		 * is returned.
+		 */
+		QVariantMap saveState() const;
+		/*!
+		 * Makes the tournament continue from \a state, which was
+		 * created by saveState().
+		 *
+		 * Must be called after the tournament has been configured
+		 * with the same settings and players as the saved
+		 * tournament, and before start(). When start() is called the
+		 * finished games are restored without playing them, and the
+		 * tournament continues with the next scheduled game.
+		 *
+		 * Returns false if \a state is not a valid saved state.
+		 */
+		bool setResumeState(const QVariantMap& state);
 
 	public slots:
 		/*! Starts the tournament. */
@@ -349,6 +392,18 @@ class LIB_EXPORT Tournament : public QObject
 		 * is fully stopped.
 		 */
 		void stop();
+		/*!
+		 * Requests the tournament to pause.
+		 *
+		 * No new games are started, but the games that are already
+		 * running are played to the end. The paused() signal is
+		 * emitted when all of them have finished.
+		 */
+		void pause();
+		/*!
+		 * Cancels a pause request, or continues a paused tournament.
+		 */
+		void resume();
 
 	signals:
 		/*!
@@ -396,6 +451,13 @@ class LIB_EXPORT Tournament : public QObject
 		 * is sent.
 		 */
 		void finished();
+		/*!
+		 * This signal is emitted when the tournament has paused,
+		 * ie. after pause() was called and all running games have
+		 * finished. The tournament state can then be saved with
+		 * saveState().
+		 */
+		void paused();
 
 	protected:
 		/*! Sets the currently executing tournament round to \a round. */
@@ -642,6 +704,21 @@ class LIB_EXPORT Tournament : public QObject
 			int number;
 			int whiteIndex;
 			int blackIndex;
+			//! Number of finished games when this game was started
+			int finishedBefore;
+			//! True if a new opening was taken from the suite
+			bool suiteAdvanced;
+		};
+		/*! A finished game, stored for saving and resuming */
+		struct GameRecord
+		{
+			int number;
+			int whiteIndex;
+			int blackIndex;
+			int finishedBefore;
+			int finishOrder;
+			bool suiteAdvanced;
+			Chess::Result result;
 		};
 		struct RankingData
 		{
@@ -692,6 +769,13 @@ class LIB_EXPORT Tournament : public QObject
 		};
 
 		QString resultsForSides(int index) const;
+		int addGameScore(int iWhite,
+				 int iBlack,
+				 const Chess::Result& result);
+		TournamentPair* prepareNextPair();
+		bool restoreState(const QVariantMap& state);
+		bool replayGames(const QList<GameRecord>& records);
+		bool checkPause();
 
 		GameManager* m_gameManager;
 		ChessGame* m_lastGame;
@@ -739,6 +823,10 @@ class LIB_EXPORT Tournament : public QObject
 		QMap<ChessGame*, GameData*> m_gameData;
 		QVector<Chess::Move> m_openingMoves;
 		QMap<int, QString> m_headerMap;
+		bool m_pauseRequested;
+		bool m_paused;
+		QMap<int, GameRecord> m_records;
+		QVariantMap m_resumeState;
 };
 
 /*!

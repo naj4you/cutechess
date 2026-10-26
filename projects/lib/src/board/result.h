@@ -97,6 +97,15 @@ class LIB_EXPORT Result
 		/*! Returns the result description. */
 		QString description() const;
 		/*!
+		 * Returns the additional description given to the
+		 * constructor, without the preset description of the
+		 * result type.
+		 *
+		 * Result(type(), winner(), extraDescription()) creates
+		 * a copy of this result.
+		 */
+		QString extraDescription() const;
+		/*!
 		 * Returns the short string representation of the result.
 		 * Can be "1-0", "0-1", "1/2-1/2", or "*".
 		 */

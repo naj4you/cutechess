@@ -167,6 +167,40 @@ GameAdjudicator GameSettingsWidget::adjudicator() const
 	return ret;
 }
 
+QVariantMap GameSettingsWidget::toVariant() const
+{
+	QVariantMap map;
+	map["variant"] = chessVariant();
+	map["pondering"] = pondering();
+
+	QVariantMap adj;
+	adj["drawMoveNumber"] = ui->m_drawMoveNumberSpin->value();
+	adj["drawMoveCount"] = ui->m_drawMoveCountSpin->value();
+	adj["drawScore"] = ui->m_drawScoreSpin->value();
+	adj["resignMoveCount"] = ui->m_resignMoveCountSpin->value();
+	adj["resignScore"] = -ui->m_resignScoreSpin->value();
+	adj["resignTwoSided"] = ui->m_resignTwoSidedRadio->isEnabled()
+				&& ui->m_resignTwoSidedRadio->isChecked();
+	adj["maxGameLength"] = ui->m_maxGameLengthSpin->value();
+	adj["tablebases"] = ui->m_tbCheck->isChecked();
+	map["adjudication"] = adj;
+
+	QVariantMap suite;
+	suite["fen"] = ui->m_fenEdit->text();
+	suite["file"] = ui->m_openingSuiteEdit->text();
+	suite["randomOrder"] = ui->m_randomOrderRadio->isChecked();
+	suite["depth"] = openingSuiteDepth();
+	map["openingSuite"] = suite;
+
+	QVariantMap book;
+	book["file"] = ui->m_polyglotFileEdit->text();
+	book["diskAccess"] = ui->m_diskAccessRadio->isChecked();
+	book["depth"] = bookDepth();
+	map["openingBook"] = book;
+
+	return map;
+}
+
 OpeningSuite* GameSettingsWidget::openingSuite() const
 {
 	QString fen = ui->m_fenEdit->text();

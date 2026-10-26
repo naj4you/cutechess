@@ -20,6 +20,7 @@
 #define GAMESETTINGSWIDGET_H
 
 #include <QWidget>
+#include <QVariantMap>
 #include <timecontrol.h>
 #include <gameadjudicator.h>
 
@@ -50,6 +51,13 @@ class GameSettingsWidget : public QWidget
 		OpeningBook* openingBook() const;
 		int bookDepth() const;
 		bool isValid() const;
+		/*!
+		 * Returns the settings that are used by tournaments
+		 * (variant, time control, adjudication, opening suite
+		 * and opening book) as a variant map that can be saved
+		 * with a tournament.
+		 */
+		QVariantMap toVariant() const;
 
 		void applyEngineConfiguration(EngineConfiguration* config);
 		void enableSettingsUpdates();

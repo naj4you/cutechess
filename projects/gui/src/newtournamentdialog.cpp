@@ -30,6 +30,9 @@
 #include <tournament.h>
 #include <tournamentfactory.h>
 #include <openingsuite.h>
+#include <polyglotbook.h>
+#include <mersenne.h>
+#include <QRandomGenerator>
 
 #include "engineconfigurationmodel.h"
 #include "engineconfigproxymodel.h"
@@ -324,56 +327,227 @@ void NewTournamentDialog::onContextMenuRequest()
 	menu.exec(QCursor::pos());
 }
 
+static QVariantMap timeControlToVariant(const TimeControl& tc)
+{
+	QVariantMap map;
+	if (!tc.isValid())
+		return map;
+
+	map["infinite"] = tc.isInfinite();
+	map["hourglass"] = tc.isHourglass();
+	map["timePerTc"] = tc.timePerTc();
+	map["movesPerTc"] = tc.movesPerTc();
+	map["increment"] = tc.timeIncrement();
+	map["timePerMove"] = tc.timePerMove();
+	map["plyLimit"] = tc.plyLimit();
+	map["nodeLimit"] = tc.nodeLimit();
+	map["expiryMargin"] = tc.expiryMargin();
+	return map;
+}
+
+static TimeControl timeControlFromVariant(const QVariantMap& map)
+{
+	TimeControl tc;
+	if (map.isEmpty())
+		return tc;
+
+	tc.setInfinity(map.value("infinite").toBool());
+	tc.setHourglass(map.value("hourglass").toBool());
+	tc.setTimePerTc(map.value("timePerTc").toInt());
+	tc.setMovesPerTc(map.value("movesPerTc").toInt());
+	tc.setTimeIncrement(map.value("increment").toInt());
+	tc.setTimePerMove(map.value("timePerMove").toInt());
+	tc.setPlyLimit(map.value("plyLimit").toInt());
+	tc.setNodeLimit(map.value("nodeLimit").toLongLong());
+	tc.setExpiryMargin(map.value("expiryMargin").toInt());
+	return tc;
+}
+
 Tournament* NewTournamentDialog::createTournament(GameManager* gameManager) const
 {
-	Q_ASSERT(gameManager != nullptr);
+	return createTournament(tournamentConfig(), gameManager, parent());
+}
+
+QVariantMap NewTournamentDialog::tournamentConfig() const
+{
 	auto ts = ui->m_tournamentSettings;
+	QVariantMap config;
 
-	auto t = TournamentFactory::create(
-		ts->tournamentType(), gameManager, parent());
+	config["type"] = ts->tournamentType();
+	config["name"] = ui->m_nameEdit->text();
+	config["site"] = ui->m_siteEdit->text();
+	config["pgnOutput"] = ui->m_pgnoutEdit->text();
+	config["epdOutput"] = ui->m_epdoutEdit->text();
+	config["seedCount"] = ts->seedCount();
+	config["gamesPerEncounter"] = ts->gamesPerEncounter();
+	config["rounds"] = ts->rounds();
+	config["startDelay"] = ts->delayBetweenGames();
+	config["openingRepetitions"] = ts->openingRepetitions();
+	config["recover"] = ts->engineRecovery();
+	config["saveUnfinishedGames"] = ts->savingOfUnfinishedGames();
+	config["swapSides"] = ts->swappingSides();
+	config["reverseSides"] = ts->reversingSchedule();
+	config["resultFormat"] = ts->resultFormat();
 
-	t->setPgnCleanupEnabled(false);
-	t->setName(ui->m_nameEdit->text());
-	t->setSite(ui->m_siteEdit->text());
-	t->setVariant(ui->m_gameSettings->chessVariant());
-	t->setPgnOutput(ui->m_pgnoutEdit->text());
-	t->setEpdOutput(ui->m_epdoutEdit->text());
+	// The random seed makes random opening order and knockout
+	// pairings reproducible when the tournament is resumed.
+	config["randomSeed"] = QRandomGenerator::global()->generate();
 
-	t->setSeedCount(ts->seedCount());
-	t->setGamesPerEncounter(ts->gamesPerEncounter());
-	if (t->canSetRoundMultiplier())
-		t->setRoundMultiplier(ts->rounds());
-	t->setStartDelay(ts->delayBetweenGames());
+	config["games"] = ui->m_gameSettings->toVariant();
+	config["timeControl"] = timeControlToVariant(
+		ui->m_gameSettings->timeControl());
 
-	t->setAdjudicator(ui->m_gameSettings->adjudicator());
-
-	t->setOpeningSuite(ui->m_gameSettings->openingSuite());
-	t->setOpeningDepth(ui->m_gameSettings->openingSuiteDepth());
-
-	t->setOpeningBookOwnership(true);
-	auto book = ui->m_gameSettings->openingBook();
-	int bookDepth = ui->m_gameSettings->bookDepth();
-
-	t->setOpeningRepetitions(ts->openingRepetitions());
-	t->setRecoveryMode(ts->engineRecovery());
-	t->setPgnWriteUnfinishedGames(ts->savingOfUnfinishedGames());
-	t->setSwapSides(ts->swappingSides());
-	t->setReverseSides(ts->reversingSchedule());
-	t->setResultFormat(ts->resultFormat());
-
-	bool isHourglass = ui->m_gameSettings->timeControl().isHourglass();
-
+	QVariantList players;
 	const auto engines = m_addedEnginesManager->engines();
 	for (int i = 0; i < engines.count(); i++)
 	{
-		EngineConfiguration config = engines.at(i);
-		ui->m_gameSettings->applyEngineConfiguration(&config);
-		TimeControl tc = m_timeControls.at(i);
+		EngineConfiguration engine = engines.at(i);
+		ui->m_gameSettings->applyEngineConfiguration(&engine);
+
+		QVariantMap player;
+		player["engine"] = engine.toVariant();
+		player["timeControl"] = timeControlToVariant(m_timeControls.at(i));
+		players << player;
+	}
+	config["players"] = players;
+
+	return config;
+}
+
+Tournament* NewTournamentDialog::createTournament(const QVariantMap& config,
+						  GameManager* gameManager,
+						  QObject* parent,
+						  QString* error)
+{
+	Q_ASSERT(gameManager != nullptr);
+
+	auto setError = [=](const QString& message)
+	{
+		if (error != nullptr)
+			*error = message;
+	};
+
+	const QVariantMap games = config.value("games").toMap();
+	const QString variant = games.value("variant").toString();
+	if (!Chess::BoardFactory::variants().contains(variant))
+	{
+		setError(tr("Unknown chess variant: %1").arg(variant));
+		return nullptr;
+	}
+
+	const QVariantList players = config.value("players").toList();
+	if (players.size() < 2)
+	{
+		setError(tr("The tournament needs at least two players"));
+		return nullptr;
+	}
+
+	auto t = TournamentFactory::create(
+		config.value("type").toString(), gameManager, parent);
+	if (t == nullptr)
+	{
+		setError(tr("Unknown tournament type: %1")
+			 .arg(config.value("type").toString()));
+		return nullptr;
+	}
+
+	if (config.contains("randomSeed"))
+		Mersenne::initialize(config.value("randomSeed").toUInt());
+
+	t->setPgnCleanupEnabled(false);
+	t->setName(config.value("name").toString());
+	t->setSite(config.value("site").toString());
+	t->setVariant(variant);
+	t->setPgnOutput(config.value("pgnOutput").toString());
+	t->setEpdOutput(config.value("epdOutput").toString());
+
+	t->setSeedCount(config.value("seedCount").toInt());
+	t->setGamesPerEncounter(qMax(1, config.value("gamesPerEncounter").toInt()));
+	if (t->canSetRoundMultiplier())
+		t->setRoundMultiplier(qMax(1, config.value("rounds").toInt()));
+	t->setStartDelay(config.value("startDelay").toInt());
+
+	const QVariantMap adj = games.value("adjudication").toMap();
+	GameAdjudicator adjudicator;
+	adjudicator.setDrawThreshold(adj.value("drawMoveNumber").toInt(),
+				     adj.value("drawMoveCount").toInt(),
+				     adj.value("drawScore").toInt());
+	adjudicator.setResignThreshold(adj.value("resignMoveCount").toInt(),
+				       adj.value("resignScore").toInt(),
+				       adj.value("resignTwoSided").toBool());
+	adjudicator.setMaximumGameLength(adj.value("maxGameLength").toInt());
+	adjudicator.setTablebaseAdjudication(adj.value("tablebases").toBool());
+	t->setAdjudicator(adjudicator);
+
+	const QVariantMap suiteMap = games.value("openingSuite").toMap();
+	OpeningSuite* suite = nullptr;
+	const QString fen = suiteMap.value("fen").toString();
+	const QString suiteFile = suiteMap.value("file").toString();
+	if (!fen.isEmpty())
+		suite = new OpeningSuite(fen);
+	else if (!suiteFile.isEmpty())
+	{
+		auto format = OpeningSuite::PgnFormat;
+		if (suiteFile.endsWith(".epd", Qt::CaseInsensitive))
+			format = OpeningSuite::EpdFormat;
+		auto order = OpeningSuite::SequentialOrder;
+		if (suiteMap.value("randomOrder").toBool())
+			order = OpeningSuite::RandomOrder;
+
+		suite = new OpeningSuite(suiteFile, format, order, 0);
+		if (!suite->initialize())
+		{
+			delete suite;
+			suite = nullptr;
+			qWarning("Could not open opening suite %s",
+				 qUtf8Printable(suiteFile));
+		}
+	}
+	t->setOpeningSuite(suite);
+	t->setOpeningDepth(suiteMap.value("depth", 1).toInt());
+
+	t->setOpeningBookOwnership(true);
+	const QVariantMap bookMap = games.value("openingBook").toMap();
+	OpeningBook* book = nullptr;
+	const QString bookFile = bookMap.value("file").toString();
+	if (!bookFile.isEmpty())
+	{
+		auto mode = bookMap.value("diskAccess").toBool()
+			    ? OpeningBook::Disk : OpeningBook::Ram;
+		book = new PolyglotBook(mode);
+		if (!book->read(bookFile))
+		{
+			delete book;
+			book = nullptr;
+			qWarning("Could not open opening book %s",
+				 qUtf8Printable(bookFile));
+		}
+	}
+	int bookDepth = bookMap.value("depth", 10).toInt();
+
+	t->setOpeningRepetitions(config.value("openingRepetitions", 1).toInt());
+	t->setRecoveryMode(config.value("recover").toBool());
+	t->setPgnWriteUnfinishedGames(
+		config.value("saveUnfinishedGames", true).toBool());
+	t->setSwapSides(config.value("swapSides", true).toBool());
+	t->setReverseSides(config.value("reverseSides").toBool());
+	t->setResultFormat(config.value("resultFormat").toString());
+
+	const TimeControl defaultTc = timeControlFromVariant(
+		config.value("timeControl").toMap());
+	bool isHourglass = defaultTc.isHourglass();
+
+	for (const QVariant& var : players)
+	{
+		const QVariantMap player = var.toMap();
+		EngineConfiguration engine(player.value("engine"));
+		TimeControl tc = timeControlFromVariant(
+			player.value("timeControl").toMap());
 		// Hourglass mode must be the same for all players
 		tc.setHourglass(isHourglass);
 
-		t->addPlayer(new EngineBuilder(config),
-			     tc.isValid() ? tc : ui->m_gameSettings->timeControl(),
+		t->addPlayer(new EngineBuilder(engine),
+			     tc.isValid() ? tc : defaultTc,
 			     book,
 			     bookDepth);
 	}

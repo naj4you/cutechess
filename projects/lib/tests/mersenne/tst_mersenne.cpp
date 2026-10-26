@@ -8,6 +8,7 @@ class tst_Mersenne: public QObject
 	private slots:
 		void numbers_data();
 		void numbers();
+		void reseed();
 };
 
 void tst_Mersenne::numbers_data()
@@ -23,8 +24,8 @@ void tst_Mersenne::numbers_data()
 
 	QTest::newRow("0xFFFFFFFF")
 		<< quint32(0xFFFFFFFFU)
-		<< quint32(485482874U)
-		<< quint32(4213522654U);
+		<< quint32(2720109276U)
+		<< quint32(3792022478U);
 }
 
 void tst_Mersenne::numbers()
@@ -36,6 +37,20 @@ void tst_Mersenne::numbers()
 	Mersenne::initialize(seed);
 	QCOMPARE(Mersenne::random(), random1);
 	QCOMPARE(Mersenne::random(), random2);
+}
+
+void tst_Mersenne::reseed()
+{
+	// The same seed must always give the same sequence,
+	// regardless of how many numbers were drawn before
+	Mersenne::initialize(12345);
+	QList<quint32> first;
+	for (int i = 0; i < 1000; i++)
+		first << Mersenne::random();
+
+	Mersenne::initialize(12345);
+	for (int i = 0; i < 1000; i++)
+		QCOMPARE(Mersenne::random(), first.at(i));
 }
 
 

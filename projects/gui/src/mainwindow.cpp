@@ -31,6 +31,14 @@
 #include <QWindow>
 #include <QSettings>
 #include <QSysInfo>
+#include <QStatusBar>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QDateTime>
+#include <QFile>
+#include <QFileInfo>
+#include <QDir>
+#include <QRegularExpression>
 
 #include <board/boardfactory.h>
 #include <chessgame.h>
@@ -78,6 +86,7 @@ MainWindow::TabData::TabData(ChessGame* game, Tournament* tournament)
 
 MainWindow::MainWindow(ChessGame* game)
 	: m_game(nullptr),
+	  m_saveWhenPaused(false),
 	  m_closing(false),
 	  m_readyToClose(false),
 	  m_firstTabAutoCloseEnabled(true)
@@ -185,6 +194,10 @@ void MainWindow::createActions()
 
 	m_newTournamentAct = new QAction(tr("&New..."), this);
 	m_stopTournamentAct = new QAction(tr("&Stop"), this);
+	m_resumeTournamentAct = new QAction(tr("Res&ume Saved Tournament..."), this);
+	m_pauseTournamentAct = new QAction(tr("&Pause After Current Games"), this);
+	m_pauseTournamentAct->setCheckable(true);
+	m_saveTournamentAct = new QAction(tr("Save &and Stop..."), this);
 	m_showTournamentResultsAct = new QAction(tr("&Results..."), this);
 
 	m_showSettingsAct = new QAction(tr("&Settings"), this);
@@ -253,6 +266,12 @@ void MainWindow::createActions()
 		app, &CuteChessApplication::onQuitAction);
 
 	connect(m_newTournamentAct, SIGNAL(triggered()), this, SLOT(newTournament()));
+	connect(m_resumeTournamentAct, SIGNAL(triggered()),
+		this, SLOT(resumeSavedTournament()));
+	connect(m_pauseTournamentAct, SIGNAL(toggled(bool)),
+		this, SLOT(onPauseTournamentToggled(bool)));
+	connect(m_saveTournamentAct, SIGNAL(triggered()),
+		this, SLOT(saveAndStopTournament()));
 
 	connect(m_minimizeAct, &QAction::triggered, this, [=]()
 	{
@@ -301,9 +320,16 @@ void MainWindow::createMenus()
 
 	m_tournamentMenu = menuBar()->addMenu(tr("&Tournament"));
 	m_tournamentMenu->addAction(m_newTournamentAct);
+	m_tournamentMenu->addAction(m_resumeTournamentAct);
+	m_tournamentMenu->addSeparator();
+	m_tournamentMenu->addAction(m_pauseTournamentAct);
+	m_tournamentMenu->addAction(m_saveTournamentAct);
 	m_tournamentMenu->addAction(m_stopTournamentAct);
+	m_tournamentMenu->addSeparator();
 	m_tournamentMenu->addAction(m_showTournamentResultsAct);
 	m_stopTournamentAct->setEnabled(false);
+	m_pauseTournamentAct->setEnabled(false);
+	m_saveTournamentAct->setEnabled(false);
 
 	m_toolsMenu = menuBar()->addMenu(tr("T&ools"));
 	m_toolsMenu->addAction(m_showSettingsAct);
@@ -789,10 +815,106 @@ void MainWindow::newTournament()
 
 	GameManager* manager = CuteChessApplication::instance()->gameManager();
 
-	Tournament* t = dlg.createTournament(manager);
+	const QVariantMap config = dlg.tournamentConfig();
+	QString error;
+	Tournament* t = NewTournamentDialog::createTournament(config, manager,
+							      this, &error);
+	if (t == nullptr)
+	{
+		QMessageBox::critical(this, tr("Tournament error"), error);
+		return;
+	}
+
+	startTournament(t, config, QString());
+}
+
+static const char* s_tournamentFileFormat = "cutechess-tournament";
+static const int s_tournamentFileVersion = 1;
+
+void MainWindow::resumeSavedTournament()
+{
+	QSettings settings;
+	const QString dir = settings.value("tournament/last_saved_dir").toString();
+	const QString fileName = QFileDialog::getOpenFileName(this,
+		tr("Resume Saved Tournament"), dir,
+		tr("Cute Chess tournaments (*.cctournament);;All files (*)"));
+	if (fileName.isEmpty())
+		return;
+
+	QFile file(fileName);
+	if (!file.open(QIODevice::ReadOnly))
+	{
+		QMessageBox::critical(this, tr("Resume tournament"),
+			tr("Could not open %1:\n%2")
+			.arg(fileName, file.errorString()));
+		return;
+	}
+
+	QJsonParseError parseError;
+	const auto doc = QJsonDocument::fromJson(file.readAll(), &parseError);
+	const QVariantMap data = doc.object().toVariantMap();
+	if (doc.isNull()
+	||  data.value("format").toString() != s_tournamentFileFormat)
+	{
+		QMessageBox::critical(this, tr("Resume tournament"),
+			tr("%1 is not a saved Cute Chess tournament.")
+			.arg(fileName));
+		return;
+	}
+	if (data.value("version").toInt() > s_tournamentFileVersion)
+	{
+		QMessageBox::critical(this, tr("Resume tournament"),
+			tr("%1 was saved by a newer version of Cute Chess.")
+			.arg(fileName));
+		return;
+	}
+
+	const QVariantMap config = data.value("config").toMap();
+	const QVariantMap state = data.value("state").toMap();
+
+	GameManager* manager = CuteChessApplication::instance()->gameManager();
+	QString error;
+	Tournament* t = NewTournamentDialog::createTournament(config, manager,
+							      this, &error);
+	if (t == nullptr || !t->setResumeState(state))
+	{
+		if (t != nullptr)
+		{
+			error = t->errorString();
+			delete t;
+		}
+		QMessageBox::critical(this, tr("Resume tournament"),
+			tr("Could not resume the tournament.\n\n%1").arg(error));
+		return;
+	}
+
+	settings.setValue("tournament/last_saved_dir",
+			  QFileInfo(fileName).absolutePath());
+	startTournament(t, config, fileName);
+
+	const int played = state.value("games").toList().size();
+	statusBar()->showMessage(tr("Resumed tournament \"%1\": %2 of %3 games "
+				    "already played")
+				 .arg(t->name())
+				 .arg(played)
+				 .arg(t->finalGameCount()));
+}
+
+void MainWindow::startTournament(Tournament* t,
+				 const QVariantMap& config,
+				 const QString& fileName)
+{
+	m_tournament = t;
+	m_tournamentConfig = config;
+	m_tournamentFile = fileName;
+	m_tournamentSavedTo.clear();
+	m_saveWhenPaused = false;
+
 	auto resultsDialog = CuteChessApplication::instance()->tournamentResultsDialog();
 	connect(t, SIGNAL(finished()),
 		this, SLOT(onTournamentFinished()));
+	connect(t, SIGNAL(paused()),
+		this, SLOT(onTournamentPaused()));
 	connect(t, SIGNAL(gameStarted(ChessGame*, int, int, int)),
 		this, SLOT(addGame(ChessGame*)));
 	connect(t, SIGNAL(gameFinished(ChessGame*, int, int, int)),
@@ -814,8 +936,133 @@ void MainWindow::newTournament()
 		t->stop();
 	});
 	m_newTournamentAct->setEnabled(false);
+	m_resumeTournamentAct->setEnabled(false);
 	m_stopTournamentAct->setEnabled(true);
+	m_pauseTournamentAct->setEnabled(true);
+	m_saveTournamentAct->setEnabled(true);
 	resultsDialog->setTournament(t);
+}
+
+void MainWindow::onPauseTournamentToggled(bool checked)
+{
+	if (m_tournament.isNull())
+		return;
+
+	if (checked)
+	{
+		m_tournament->pause();
+		if (!m_tournament->isPaused())
+			statusBar()->showMessage(tr("The tournament will pause "
+						    "when the current games "
+						    "have finished"));
+	}
+	else
+	{
+		m_saveWhenPaused = false;
+		m_tournament->resume();
+		statusBar()->showMessage(tr("Tournament resumed"), 5000);
+	}
+}
+
+void MainWindow::onTournamentPaused()
+{
+	if (m_tournament.isNull())
+		return;
+
+	if (m_saveWhenPaused)
+	{
+		m_saveWhenPaused = false;
+		if (writeTournamentFile(m_tournamentFile))
+		{
+			m_tournamentSavedTo = m_tournamentFile;
+			m_tournament->stop();
+			return;
+		}
+	}
+
+	statusBar()->showMessage(tr("Tournament paused. Uncheck "
+				    "\"Pause After Current Games\" to continue, "
+				    "or use \"Save and Stop\" to continue "
+				    "another time."));
+	CuteChessApplication::alert(this);
+}
+
+void MainWindow::saveAndStopTournament()
+{
+	if (m_tournament.isNull())
+		return;
+
+	QString fileName = m_tournamentFile;
+	if (fileName.isEmpty())
+	{
+		QString dir = QSettings().value("tournament/last_saved_dir",
+						QDir::homePath()).toString();
+		QString name = m_tournament->name().trimmed();
+		if (name.isEmpty())
+			name = tr("tournament");
+		name.replace(QRegularExpression("[\\\\/:*?\"<>|]"), "_");
+		fileName = QDir(dir).filePath(name + ".cctournament");
+	}
+
+	fileName = QFileDialog::getSaveFileName(this, tr("Save Tournament"),
+		fileName,
+		tr("Cute Chess tournaments (*.cctournament);;All files (*)"));
+	if (fileName.isEmpty())
+		return;
+	if (QFileInfo(fileName).suffix().isEmpty())
+		fileName += ".cctournament";
+
+	QSettings().setValue("tournament/last_saved_dir",
+			     QFileInfo(fileName).absolutePath());
+	m_tournamentFile = fileName;
+
+	if (m_tournament->isPaused())
+	{
+		if (writeTournamentFile(fileName))
+		{
+			m_tournamentSavedTo = fileName;
+			m_tournament->stop();
+		}
+		return;
+	}
+
+	m_saveWhenPaused = true;
+	m_pauseTournamentAct->setChecked(true);
+	statusBar()->showMessage(tr("The tournament will be saved and stopped "
+				    "when the current games have finished"));
+}
+
+bool MainWindow::writeTournamentFile(const QString& fileName)
+{
+	Q_ASSERT(!m_tournament.isNull());
+
+	const QVariantMap state = m_tournament->saveState();
+	if (state.isEmpty())
+	{
+		QMessageBox::critical(this, tr("Save tournament"),
+			tr("The tournament can only be saved when no games "
+			   "are in progress."));
+		return false;
+	}
+
+	QVariantMap data;
+	data["format"] = s_tournamentFileFormat;
+	data["version"] = s_tournamentFileVersion;
+	data["savedAt"] = QDateTime::currentDateTime().toString(Qt::ISODate);
+	data["config"] = m_tournamentConfig;
+	data["state"] = state;
+
+	QFile file(fileName);
+	if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)
+	||  file.write(QJsonDocument(QJsonObject::fromVariantMap(data)).toJson()) < 0)
+	{
+		QMessageBox::critical(this, tr("Save tournament"),
+			tr("Could not save the tournament to %1:\n%2")
+			.arg(fileName, file.errorString()));
+		return false;
+	}
+
+	return true;
 }
 
 void MainWindow::onTournamentFinished()
@@ -827,10 +1074,22 @@ void MainWindow::onTournamentFinished()
 
 	QString error = tournament->errorString();
 	QString name = tournament->name();
+	const QString savedTo = m_tournamentSavedTo;
 
 	tournament->deleteLater();
+	m_tournament = nullptr;
+	m_tournamentConfig.clear();
+	m_tournamentSavedTo.clear();
+	m_saveWhenPaused = false;
 	m_newTournamentAct->setEnabled(true);
+	m_resumeTournamentAct->setEnabled(true);
 	m_stopTournamentAct->setEnabled(false);
+	m_pauseTournamentAct->blockSignals(true);
+	m_pauseTournamentAct->setChecked(false);
+	m_pauseTournamentAct->blockSignals(false);
+	m_pauseTournamentAct->setEnabled(false);
+	m_saveTournamentAct->setEnabled(false);
+	statusBar()->clearMessage();
 
 	if (m_closing)
 	{
@@ -839,6 +1098,14 @@ void MainWindow::onTournamentFinished()
 	}
 
 	m_showTournamentResultsAct->trigger();
+
+	if (!savedTo.isEmpty())
+	{
+		QMessageBox::information(this, tr("Tournament saved"),
+			tr("Tournament \"%1\" was saved to\n%2\n\n"
+			   "Use Tournament > Resume Saved Tournament to "
+			   "continue it.").arg(name, savedTo));
+	}
 
 	if (!error.isEmpty())
 	{

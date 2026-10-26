@@ -164,6 +164,11 @@ QString Result::description() const
 	return str;
 }
 
+QString Result::extraDescription() const
+{
+	return m_description;
+}
+
 QString Result::toShortString() const
 {
 	if (m_type == NoResult || m_type == ResultError)

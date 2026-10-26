@@ -23,6 +23,7 @@ namespace {
 
 int s_index = 0;
 quint32 s_mt[624];
+QMutex s_mutex;
 
 void generateNumbers()
 {
@@ -40,16 +41,21 @@ void generateNumbers()
 
 void Mersenne::initialize(quint32 seed)
 {
+	QMutexLocker locker(&s_mutex);
+
 	s_mt[0] = seed;
 
 	for (int i = 1; i < 624; i++)
 		s_mt[i] = (0x6C078965 * (s_mt[i - 1] ^ (s_mt[i - 1] >> 30)) + i) & 0xFFFFFFFF;
+
+	// Restart the sequence so that the same seed always
+	// produces the same numbers
+	s_index = 0;
 }
 
 quint32 Mersenne::random()
 {
-	static QMutex mutex;
-	mutex.lock();
+	QMutexLocker locker(&s_mutex);
 
 	if (s_index == 0)
 		generateNumbers();
@@ -61,7 +67,6 @@ quint32 Mersenne::random()
 	y ^= y >> 18;
 
 	s_index = (s_index + 1) % 624;
-	mutex.unlock();
 
 	return y;
 }

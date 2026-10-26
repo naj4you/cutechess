@@ -20,6 +20,7 @@
 #define NEWTOURNAMENTDIALOG_H
 
 #include <QDialog>
+#include <QVariantMap>
 #include <timecontrol.h>
 
 class QModelIndex;
@@ -44,6 +45,21 @@ class NewTournamentDialog : public QDialog
 		virtual ~NewTournamentDialog();
 
 		Tournament* createTournament(GameManager* gameManager) const;
+		/*!
+		 * Returns all the settings of the tournament as a
+		 * variant map that can be saved to a file.
+		 */
+		QVariantMap tournamentConfig() const;
+		/*!
+		 * Creates a tournament from \a config, which was created by
+		 * tournamentConfig().
+		 *
+		 * Returns nullptr and sets \a error on failure.
+		 */
+		static Tournament* createTournament(const QVariantMap& config,
+						    GameManager* gameManager,
+						    QObject* parent,
+						    QString* error = nullptr);
 
 	private slots:
 		void addEngineOnDblClick(const QModelIndex& index);
