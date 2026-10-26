@@ -1,9 +1,10 @@
-# Builds a Windows version of Cute Chess from any branch of your fork
-# and makes it available as a downloadable zip file.
+# Builds a Windows version of Cute Chess from any branch of your fork,
+# keeps it as a downloadable artifact and (by default) publishes it as a
+# release that anyone can download without a GitHub account.
 #
 # Put this file in .github/workflows/ on the master branch of YOUR fork
 # (not on the branch you send as a pull request), then run it from the
-# Actions tab: "Build Windows zip" -> "Run workflow" -> type the branch name.
+# Actions tab: "Build Windows zip" -> "Run workflow".
 name: Build Windows zip
 on:
   workflow_dispatch:
@@ -12,17 +13,22 @@ on:
         description: "Branch to build"
         required: true
         default: "min-version"
+      release:
+        description: "Publish as a release (downloadable by anyone)"
+        type: boolean
+        default: true
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   windows:
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.branch }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Install Qt
@@ -46,7 +52,42 @@ jobs:
           & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --no-translations "$name\cutechess.exe"
           echo "PKG=$name" >> $env:GITHUB_ENV
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: ${{ env.PKG }}
           path: ${{ env.PKG }}
+
+      - name: Publish release
+        if: ${{ github.event.inputs.release == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.event.inputs.branch }}
+        run: |
+          $stamp = Get-Date -Format "yyyy-MM-dd-HHmm"
+          $tag = "$env:BRANCH-$stamp"
+          $version = (Get-Content .version -Raw).Trim()
+          $sha = git rev-parse HEAD
+          Compress-Archive -Path "$env:PKG" -DestinationPath "$env:PKG.zip"
+
+          # The changes compared to the official Cute Chess
+          git fetch --quiet https://github.com/cutechess/cutechess.git master
+          $changes = (git log --reverse --format="- %s" FETCH_HEAD..HEAD) -join "`n"
+          if (-not $changes) { $changes = "- (inga, officiell Cute Chess)" }
+
+          $notes = @"
+          Inofficiell version av **Cute Chess $version** för Windows (64-bit), med följande tillägg:
+
+          $changes
+
+          **Så här gör du:** ladda ner zip-filen under *Assets* nedan, packa upp den och starta ``cutechess.exe``.
+          Klagar Windows på att VCRUNTIME140.dll saknas, installera *Microsoft Visual C++ Redistributable x64* från Microsoft.
+
+          Officiell Cute Chess finns på https://github.com/cutechess/cutechess
+
+          ---
+          Unofficial Windows build of Cute Chess $version with the changes listed above.
+          Built from branch ``$env:BRANCH`` ($sha). Source code: https://github.com/$env:GITHUB_REPOSITORY/tree/$env:BRANCH
+          "@
+          Set-Content -Path notes.md -Value $notes -Encoding utf8
+
+          gh release create $tag "$env:PKG.zip" --repo "$env:GITHUB_REPOSITORY" --target $sha --title "Cute Chess $version med tillägg ($stamp)" --notes-file notes.md --latest
