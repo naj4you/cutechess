@@ -21,7 +21,7 @@
 
 #include <QDialog>
 
-class QPlainTextEdit;
+class TournamentResultsWidget;
 class Tournament;
 
 class TournamentResultsDialog : public QDialog
@@ -40,7 +40,7 @@ class TournamentResultsDialog : public QDialog
 		void update();
 
 	private:
-		QPlainTextEdit* m_resultsEdit;
+		TournamentResultsWidget* m_resultsWidget;
 };
 
 #endif // TOURNAMENTRESULTSDLG_H
